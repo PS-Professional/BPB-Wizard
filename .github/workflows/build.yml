@@ -34,14 +34,10 @@ jobs:
           mkdir wrangler
           cd wrangler
           npm install wrangler --save-dev
-
-      - name: Setup project
-        run: Compress-Archive -Path wrangler\* -DestinationPath bundles\wrangler.zip
+          Compress-Archive -Path .\* -DestinationPath bundles\wrangler.zip
 
       - name: Build for all Windows architectures
-        run: |
-          powershell -ExecutionPolicy Bypass -File build.ps1
-          build.ps1
+        run: .\build.ps1
 
       - name: Upload built executables to artifacts
         uses: actions/upload-artifact@v4
