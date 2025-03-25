@@ -39,7 +39,9 @@ jobs:
         run: Compress-Archive -Path wrangler\* -DestinationPath bundles\wrangler.zip
 
       - name: Build for all Windows architectures
-        run: build.ps1
+        run: |
+          powershell -ExecutionPolicy Bypass -File build.ps1
+          build.ps1
 
       - name: Upload built executables to artifacts
         uses: actions/upload-artifact@v4
