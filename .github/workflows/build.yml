@@ -34,7 +34,7 @@ jobs:
           mkdir wrangler
           cd wrangler
           npm install wrangler --save-dev
-          Compress-Archive -Path .\* -DestinationPath bundles\wrangler.zip
+          Compress-Archive -Path .\* -DestinationPath ..\bundles\wrangler.zip
 
       - name: Build for all Windows architectures
         run: .\build.ps1
