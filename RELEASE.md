@@ -1,6 +1,6 @@
 # ⚙️ Bug fixes and Improvements
 
 - Try to alleviate AntiViruses False positive
-- Some CLI improvements
+- Avoid Cloudflare login on each Wizard run, you need to login on your device once.
 - Minor bug fixes
 - Updated dependencies

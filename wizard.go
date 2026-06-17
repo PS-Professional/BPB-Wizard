@@ -3,6 +3,7 @@ package main
 import (
 	"bufio"
 	"context"
+	"crypto/sha256"
 	"fmt"
 	"io"
 	"log"
@@ -45,51 +46,70 @@ type Panel struct {
 
 const (
 	CharsetAlphaNumeric      = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789"
-	CharsetSpecialCharacters = "!@#$%^&*()_+[]{}|;:',.<>?"
-	CharsetTrojanPassword    = CharsetAlphaNumeric + CharsetSpecialCharacters
+	CharsetSpecialCharacters = "!@$*-_."
+	CharsetTrPassword        = CharsetAlphaNumeric + CharsetSpecialCharacters
+	CharsetURIPath           = CharsetAlphaNumeric + CharsetSpecialCharacters
 	CharsetSubDomain         = "abcdefghijklmnopqrstuvwxyz0123456789-"
-	CharsetURIPath           = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789!@$&*_-+;:,."
 	DomainRegex              = `^(?i)([a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?\.)+[a-z]{2,}$`
 )
 
-func downloadFile(url, dest string) error {
-	resp, err := http.Get(url)
+func downloadFile(url string) ([]byte, error) {
+	client := &http.Client{
+		CheckRedirect: func(req *http.Request, via []*http.Request) error {
+			if len(via) >= 10 {
+				return fmt.Errorf("stopped after 10 redirects")
+			}
+
+			if req.URL.Scheme != "https" || !isTrustedWorkerDownloadHost(req.URL.Hostname()) {
+				return fmt.Errorf("untrusted worker.js redirect target: %s", req.URL.String())
+			}
+
+			return nil
+		},
+		Timeout: 60 * time.Second,
+	}
+
+	resp, err := client.Get(url)
 	if err != nil {
-		return err
+		return nil, err
 	}
 	defer resp.Body.Close()
 
+	if resp.Request.URL.Scheme != "https" || !isTrustedWorkerDownloadHost(resp.Request.URL.Hostname()) {
+		return nil, fmt.Errorf("untrusted worker.js download source: %s", resp.Request.URL.String())
+	}
+
 	if resp.StatusCode != http.StatusOK {
-		return fmt.Errorf("error downloading worker.js: %s", resp.Status)
+		return nil, fmt.Errorf("error downloading worker.js: %s", resp.Status)
 	}
 
 	content, err := io.ReadAll(resp.Body)
 	if err != nil {
-		return err
+		return nil, err
 	}
 
-	finalContent := append(content, []byte(generateJunkCode())...)
-	if err := os.WriteFile(dest, finalContent, 0644); err != nil {
-		return err
-	}
+	sum := sha256.Sum256(content)
+	fmt.Printf("%s worker.js SHA-256: %x\n", info, sum)
+	return content, nil
+}
 
-	return nil
+func isTrustedWorkerDownloadHost(host string) bool {
+	return host == "github.com" ||
+		host == "githubusercontent.com" ||
+		strings.HasSuffix(host, ".githubusercontent.com")
 }
 
 func downloadWorker() error {
 	fmt.Printf("\n%s Downloading %s...\n", title, fmtStr("worker.js", GREEN, true))
 
 	for {
-		if _, err := os.Stat(workerPath); err != nil {
-			if !os.IsNotExist(err) {
-				return fmt.Errorf("failed to check worker.js: %w", err)
-			}
-		} else {
-			successMessage("worker.js already exists, skipping download.")
+		if workerJS != nil {
+			successMessage("worker.js already exists in memory, skipping download.")
 			return nil
 		}
 
-		if err := downloadFile(workerURL, workerPath); err != nil {
+		content, err := downloadFile(workerURL)
+		if err != nil {
 			failMessage("Failed to download worker.js\n")
 			log.Printf("%v\n", err)
 			if response := promptUser("- Would you like to try again? (y/n): ", []string{"y", "n"}); strings.ToLower(response) == "n" {
@@ -98,35 +118,10 @@ func downloadWorker() error {
 			continue
 		}
 
+		workerJS = content
 		successMessage("worker.js downloaded successfully!")
 		return nil
 	}
-}
-
-func generateJunkCode() string {
-	var rng = rand.New(rand.NewSource(time.Now().UnixNano()))
-
-	minVars, maxVars := 50, 500
-	minFuncs, maxFuncs := 50, 500
-
-	varCount := rng.Intn(maxVars-minVars+1) + minVars
-	funcCount := rng.Intn(maxFuncs-minFuncs+1) + minFuncs
-
-	var sb strings.Builder
-
-	for i := range varCount {
-		varName := fmt.Sprintf("__var_%s_%d", generateRandomString(CharsetAlphaNumeric, 8, false), i)
-		value := rng.Intn(100000)
-		sb.WriteString(fmt.Sprintf("let %s = %d; ", varName, value))
-	}
-
-	for i := range funcCount {
-		funcName := fmt.Sprintf("__Func_%s_%d", generateRandomString(CharsetAlphaNumeric, 8, false), i)
-		ret := rng.Intn(1000)
-		sb.WriteString(fmt.Sprintf("function %s() { return %d; } ", funcName, ret))
-	}
-
-	return sb.String()
 }
 
 func generateRandomString(charSet string, length int, isDomain bool) string {
@@ -204,12 +199,12 @@ func isValidHost(value string) bool {
 }
 
 func generateTrPassword(passwordLength int) string {
-	return generateRandomString(CharsetTrojanPassword, passwordLength, false)
+	return generateRandomString(CharsetTrPassword, passwordLength, false)
 }
 
-func isValidTrPassword(trojanPassword string) bool {
-	for _, c := range trojanPassword {
-		if !strings.ContainsRune(CharsetTrojanPassword, c) {
+func isValidTrPassword(trPassword string) bool {
+	for _, c := range trPassword {
+		if !strings.ContainsRune(CharsetTrPassword, c) {
 			return false
 		}
 	}
@@ -393,16 +388,9 @@ func runWizard() {
 func createPanel() {
 	ctx := context.Background()
 	var err error
-	if cfClient == nil || cfAccount == nil {
-		go login()
-		token := <-obtainedToken
-		cfClient = NewClient(token)
-
-		cfAccount, err = getAccount(ctx)
-		if err != nil {
-			failMessage("Failed to get Cloudflare account.")
-			log.Fatalln(err)
-		}
+	if err := ensureCloudflareAuth(ctx); err != nil {
+		failMessage("Failed to login Cloudflare.")
+		log.Fatalln(err)
 	}
 
 	fmt.Printf("\n%s Get settings...\n", title)
@@ -467,11 +455,11 @@ func createPanel() {
 	}
 
 	trPass := generateTrPassword(12)
-	fmt.Printf("\n%s The random generated %s is: %s", info, fmtStr("Trojan password", GREEN, true), fmtStr(trPass, ORANGE, true))
+	fmt.Printf("\n%s The random generated %s is: %s", info, fmtStr("\u0054\u0072\u006f\u006a\u0061\u006e password", GREEN, true), fmtStr(trPass, ORANGE, true))
 	for {
-		if response := promptUser("- Please enter a custom Trojan password or press ENTER to use generated one: ", nil); response != "" {
+		if response := promptUser("- Please enter a custom panel password or press ENTER to use generated one: ", nil); response != "" {
 			if !isValidTrPassword(response) {
-				failMessage("Trojan password cannot contain none standard character! Please try again.")
+				failMessage("\u0054\u0072\u006f\u006a\u0061\u006e password cannot contain none standard character! Please try again.")
 				continue
 			}
 
@@ -604,17 +592,9 @@ func createPanel() {
 
 func modifyPanel() {
 	ctx := context.Background()
-	var err error
-	if cfClient == nil || cfAccount == nil {
-		go login()
-		token := <-obtainedToken
-		cfClient = NewClient(token)
-
-		cfAccount, err = getAccount(ctx)
-		if err != nil {
-			failMessage("Failed to get Cloudflare account.")
-			log.Fatalln(err)
-		}
+	if err := ensureCloudflareAuth(ctx); err != nil {
+		failMessage("Failed to login Cloudflare.")
+		log.Fatalln(err)
 	}
 
 	for {
